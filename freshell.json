@@ -1,0 +1,36 @@
+{
+  "name": "kilroy-run-pane",
+  "version": "0.1.0",
+  "label": "Kilroy Run Viewer",
+  "description": "View Kilroy pipeline runs with DAG visualization and stage execution details",
+  "category": "server",
+  "server": {
+    "command": "node",
+    "args": ["dist-server/index.js"],
+    "env": {
+      "PORT": "{{port}}",
+      "KILROY_RUNS_DIR": "{{runsDir}}"
+    },
+    "readyPattern": "Listening on",
+    "readyTimeout": 10000,
+    "healthCheck": "/api/health",
+    "singleton": true
+  },
+  "url": "/run/{{runId}}",
+  "contentSchema": {
+    "runId": {
+      "type": "string",
+      "label": "Run ID",
+      "required": false
+    },
+    "runsDir": {
+      "type": "string",
+      "label": "Runs directory",
+      "default": "~/.local/state/kilroy/attractor/runs"
+    }
+  },
+  "picker": {
+    "shortcut": "R",
+    "group": "tools"
+  }
+}

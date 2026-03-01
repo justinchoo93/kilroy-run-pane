@@ -15,6 +15,11 @@ export function registerRoutes(
 ) {
   const { runsDirs, distDir, watcher } = opts;
 
+  // Health check for freshell extension system
+  app.get("/api/health", (_req: Request, res: Response) => {
+    res.json({ ok: true, name: "kilroy-run-pane", version: "0.1.0" });
+  });
+
   /** Collect all run IDs across all configured runsDirs, deduped, newest-first. */
   async function listAllRunIds(): Promise<{ id: string; runsDir: string }[]> {
     const seen = new Set<string>();
