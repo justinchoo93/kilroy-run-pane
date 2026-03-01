@@ -8,6 +8,8 @@ interface Props {
   highlightNode?: string;
   completedNodes?: string[];
   failedNodes?: string[];
+  /** The single node that caused the run to terminate (shown red). All other failed nodes are yellow. */
+  terminalFailedNode?: string;
   cycleNodes?: string[];
   cycleResolved?: boolean;
   onNodeClick?: (nodeName: string) => void;
@@ -186,7 +188,7 @@ const GLOW_FILTERS = `
     <feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#93c5fd" flood-opacity="0.8"/>
   </filter>
   <filter id="glow-active" x="-50%" y="-50%" width="200%" height="200%">
-    <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#f59e0b" flood-opacity="1"/>
+    <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#60a5fa" flood-opacity="1"/>
   </filter>
   <filter id="glow-cycle" x="-60%" y="-60%" width="220%" height="220%">
     <feDropShadow dx="0" dy="0" stdDeviation="7" flood-color="#f97316" flood-opacity="1"/>
@@ -204,6 +206,7 @@ export function DotPreview({
   highlightNode,
   completedNodes,
   failedNodes,
+  terminalFailedNode,
   cycleNodes,
   cycleResolved,
   onNodeClick,
@@ -386,6 +389,7 @@ export function DotPreview({
       const isSelected = selectedNode != null && title === selectedNode;
       const isCompleted = completedSet.has(title);
       const isFailed = failedSet.has(title);
+      const isTerminalFailed = isFailed && title === terminalFailedNode;
       const isCycle = cycleSet.has(title);
 
       if (!isActive && !isSelected && !isFailed && !isCompleted && !isCycle) return;
@@ -397,17 +401,25 @@ export function DotPreview({
           shape.setAttribute("data-orig-fill", shape.getAttribute("fill") || "");
         }
 
-        // Apply status-based fill/stroke (priority: active > failed > completed).
+        // Apply status-based fill/stroke (priority: active > terminal-failed > retry-failed > completed).
         // Cycle nodes intentionally do NOT change color — only glow is applied.
         if (isActive) {
-          shape.setAttribute("stroke", "#f59e0b");
+          // Blue for currently running
+          shape.setAttribute("stroke", "#60a5fa");
           shape.setAttribute("stroke-width", "2");
-          shape.setAttribute("fill", "rgba(245, 158, 11, 0.12)");
+          shape.setAttribute("fill", "rgba(96, 165, 250, 0.12)");
           shape.setAttribute("data-highlighted", "true");
-        } else if (isFailed) {
+        } else if (isTerminalFailed) {
+          // Red for the node that terminated the run
           shape.setAttribute("stroke", "#ef4444");
           shape.setAttribute("stroke-width", "2");
           shape.setAttribute("fill", "rgba(239, 68, 68, 0.12)");
+          shape.setAttribute("data-failed", "true");
+        } else if (isFailed) {
+          // Yellow for nodes that failed earlier (retries / non-terminal)
+          shape.setAttribute("stroke", "#eab308");
+          shape.setAttribute("stroke-width", "2");
+          shape.setAttribute("fill", "rgba(234, 179, 8, 0.10)");
           shape.setAttribute("data-failed", "true");
         } else if (isCompleted) {
           shape.setAttribute("stroke", "#22c55e");
@@ -438,13 +450,14 @@ export function DotPreview({
         if (t.getAttribute("data-orig-text-fill") === null) {
           t.setAttribute("data-orig-text-fill", t.getAttribute("fill") || "");
         }
-        if (isActive) t.setAttribute("fill", "#fbbf24");
-        else if (isFailed) t.setAttribute("fill", "#f87171");
-        else if (isCompleted) t.setAttribute("fill", "#4ade80");
+        if (isActive) t.setAttribute("fill", "#93c5fd");         // blue-300
+        else if (isTerminalFailed) t.setAttribute("fill", "#f87171");  // red-400
+        else if (isFailed) t.setAttribute("fill", "#fde047");    // yellow-300
+        else if (isCompleted) t.setAttribute("fill", "#4ade80"); // green-400
         // Cycle nodes: no text color change — the glow on the shape is enough
       });
     });
-  }, [highlightNode, completedNodes, failedNodes, cycleNodes, cycleResolved, dot, selectedNode, svgVersion]);
+  }, [highlightNode, completedNodes, failedNodes, terminalFailedNode, cycleNodes, cycleResolved, dot, selectedNode, svgVersion]);
 
   // Highlight traversed edges and add traversal count badges.
   // When hoveredHistoryIndex is set, only highlights edges up to that point;
@@ -984,8 +997,10 @@ export function DotPreview({
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const rect = container.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
+      // Subtract clientLeft/clientTop (border widths) so the zoom origin is
+      // relative to the content area, not the outer border edge.
+      const cx = e.clientX - rect.left - container.clientLeft;
+      const cy = e.clientY - rect.top - container.clientTop;
 
       // Normalize delta across wheel modes
       let delta = e.deltaY;
@@ -1068,8 +1083,8 @@ export function DotPreview({
       pinchRef.current = {
         startDist: dist,
         startScale: scale,
-        midX: (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left,
-        midY: (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top,
+        midX: (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left - container.clientLeft,
+        midY: (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top - container.clientTop,
       };
     }
   }, [scale]);
