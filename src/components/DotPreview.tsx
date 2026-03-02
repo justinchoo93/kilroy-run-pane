@@ -997,10 +997,8 @@ export function DotPreview({
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const rect = container.getBoundingClientRect();
-      // Subtract clientLeft/clientTop (border widths) so the zoom origin is
-      // relative to the content area, not the outer border edge.
-      const cx = e.clientX - rect.left - container.clientLeft;
-      const cy = e.clientY - rect.top - container.clientTop;
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
 
       // Normalize delta across wheel modes
       let delta = e.deltaY;
@@ -1083,8 +1081,8 @@ export function DotPreview({
       pinchRef.current = {
         startDist: dist,
         startScale: scale,
-        midX: (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left - container.clientLeft,
-        midY: (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top - container.clientTop,
+        midX: (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left,
+        midY: (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top,
       };
     }
   }, [scale]);
