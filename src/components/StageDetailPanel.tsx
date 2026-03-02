@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import type { RunRecord, VisitedStage, TurnsData } from "../lib/types";
 import { FileVisualizer } from "./FileVisualizers";
 import { TurnViewer } from "./TurnViewer";
@@ -228,7 +229,15 @@ function LLMNodeContent({
   totalVisits: number;
   otherVisits: { visit: VisitedStage; visitNum: number; stagePath: string }[];
 }) {
-  const [tab, setTab] = useState<LLMTab>("response");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTabState] = useState<LLMTab>(() => {
+    const t = searchParams.get("tab");
+    return t === "response" || t === "turns" || t === "prompt" ? t : "response";
+  });
+  const setTab = useCallback((newTab: LLMTab) => {
+    setTabState(newTab);
+    setSearchParams((p) => { p.set("tab", newTab); return p; }, { replace: true });
+  }, [setSearchParams]);
   const [responseContent, setResponseContent] = useState<string | null>(null);
   const [promptContent, setPromptContent] = useState<string | null>(null);
   const [turnsData, setTurnsData] = useState<TurnsData | null>(null);

@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useMemo } from "react";
-import { useParams } from "react-router-dom";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useRunMonitor } from "../hooks/useRunMonitor";
 import { DotPreview } from "./DotPreview";
 import { StageSidebar } from "./StageSidebar";
@@ -135,6 +135,7 @@ function PendingNodePanel({
 export function KilroyRunViewer() {
   const { runId } = useParams<{ runId: string }>();
   const { runState, stages, stageHistory, dot, loading, error, connected } = useRunMonitor(runId);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [selectedHistoryIndex, setSelectedHistoryIndex] = useState<number | null>(null);
   const [hoveredHistoryIndex, setHoveredHistoryIndex] = useState<number | null>(null);
@@ -147,6 +148,54 @@ export function KilroyRunViewer() {
   // Cycle steps menu toggle
   const [cycleMenuOpen, setCycleMenuOpen] = useState(false);
 
+  // ── URL deep-link helpers ──────────────────────────────────────────────────
+
+  // Compute 1-based visit number for a given stageHistory index (among all visits
+  // to the same node_id). Used when writing ?visit=N to the URL.
+  const visitNumForIndex = useCallback((idx: number) => {
+    const nodeId = stageHistory[idx]?.node_id;
+    if (!nodeId) return 1;
+    let nth = 0;
+    for (let i = 0; i <= idx; i++) {
+      if (stageHistory[i].node_id === nodeId) nth++;
+    }
+    return nth;
+  }, [stageHistory]);
+
+  const writeSelectedToUrl = useCallback((idx: number) => {
+    const nodeId = stageHistory[idx]?.node_id;
+    if (!nodeId) return;
+    const nth = visitNumForIndex(idx);
+    setSearchParams((p) => { p.set("node", nodeId); p.set("visit", String(nth)); return p; }, { replace: true });
+  }, [stageHistory, visitNumForIndex, setSearchParams]);
+
+  const clearSelectionFromUrl = useCallback(() => {
+    setSearchParams((p) => { p.delete("node"); p.delete("visit"); p.delete("tab"); return p; }, { replace: true });
+  }, [setSearchParams]);
+
+  // Once stageHistory first loads, restore selection from URL params.
+  const initializedFromUrl = useRef(false);
+  useEffect(() => {
+    if (initializedFromUrl.current) return;
+    if (!stageHistory.length) return;
+    initializedFromUrl.current = true;
+    const nodeParam = searchParams.get("node");
+    if (!nodeParam) return;
+    const visitParam = searchParams.get("visit");
+    const visitNum = visitParam ? parseInt(visitParam, 10) : NaN;
+    const visitsToNode = stageHistory.map((v, i) => ({ v, i })).filter(({ v }) => v.node_id === nodeParam);
+    if (visitsToNode.length === 0) {
+      setPendingNodeId(nodeParam);
+      return;
+    }
+    const entry =
+      !isNaN(visitNum) && visitNum >= 1 && visitNum <= visitsToNode.length
+        ? visitsToNode[visitNum - 1]
+        : visitsToNode[visitsToNode.length - 1];
+    userClosedRef.current = false;
+    setSelectedHistoryIndex(entry.i);
+  }, [stageHistory.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const run = runState?.run;
 
   // Map node IDs → human-readable labels from the DOT graph
@@ -157,6 +206,7 @@ export function KilroyRunViewer() {
   useEffect(() => {
     if (selectedHistoryIndex !== null) return;  // don't override an active selection
     if (userClosedRef.current) return;           // user dismissed — respect that
+    if (searchParams.get("node")) return;        // URL deep-link takes precedence
     if (
       computedStatus !== "failed" &&
       computedStatus !== "stalled" &&
@@ -165,7 +215,11 @@ export function KilroyRunViewer() {
     // Find the last failed entry in history
     let lastFailIndex = -1;
     stageHistory.forEach((v, i) => { if (v.status === "fail") lastFailIndex = i; });
-    if (lastFailIndex >= 0) { setPendingNodeId(null); setSelectedHistoryIndex(lastFailIndex); }
+    if (lastFailIndex >= 0) {
+      setPendingNodeId(null);
+      setSelectedHistoryIndex(lastFailIndex);
+      writeSelectedToUrl(lastFailIndex);
+    }
   }, [stageHistory, computedStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Derive graph node colorings from stageHistory (most recent status per node)
@@ -228,11 +282,13 @@ export function KilroyRunViewer() {
       userClosedRef.current = true;
       setSelectedHistoryIndex(null);
       setPendingNodeId(null);
+      clearSelectionFromUrl();
       return;
     }
     if (pendingNodeId === nodeName) {
       userClosedRef.current = true;
       setPendingNodeId(null);
+      clearSelectionFromUrl();
       return;
     }
     userClosedRef.current = false;
@@ -241,9 +297,11 @@ export function KilroyRunViewer() {
     if (lastIndex >= 0) {
       setSelectedHistoryIndex(lastIndex);
       setPendingNodeId(null);
+      writeSelectedToUrl(lastIndex);
     } else {
       setSelectedHistoryIndex(null);
       setPendingNodeId(nodeName);
+      setSearchParams((p) => { p.set("node", nodeName); p.delete("visit"); p.delete("tab"); return p; }, { replace: true });
     }
   };
 
@@ -353,7 +411,7 @@ export function KilroyRunViewer() {
                 return (
                   <button
                     key={nodeId}
-                    onClick={() => { userClosedRef.current = false; setPendingNodeId(null); setSelectedHistoryIndex(lastIndex); }}
+                    onClick={() => { userClosedRef.current = false; setPendingNodeId(null); setSelectedHistoryIndex(lastIndex); writeSelectedToUrl(lastIndex); }}
                     className={`w-full text-left flex items-start gap-2 px-4 py-1 hover:bg-white/5 transition-colors ${isFailing ? "bg-red-950/20" : ""}`}
                   >
                     <span className={`text-xs mt-0.5 shrink-0 w-3 text-center ${iconCls}`}>{icon}</span>
@@ -388,7 +446,7 @@ export function KilroyRunViewer() {
             stages={stages}
             stageHistory={stageHistory}
             selectedHistoryIndex={selectedHistoryIndex}
-            onSelectVisit={(idx) => { setPendingNodeId(null); setSelectedHistoryIndex(idx); }}
+            onSelectVisit={(idx) => { setPendingNodeId(null); setSelectedHistoryIndex(idx); writeSelectedToUrl(idx); }}
             onHoverVisit={setHoveredHistoryIndex}
             restartCount={runState?.restartCount}
             restartKinds={runState?.restartKinds}
@@ -441,8 +499,8 @@ export function KilroyRunViewer() {
               run={run}
               stageHistory={stageHistory}
               selectedHistoryIndex={selectedHistoryIndex}
-              onSelectVisit={(idx) => { userClosedRef.current = false; setSelectedHistoryIndex(idx); setPendingNodeId(null); }}
-              onClose={() => { userClosedRef.current = true; setSelectedHistoryIndex(null); setPendingNodeId(null); }}
+              onSelectVisit={(idx) => { userClosedRef.current = false; setSelectedHistoryIndex(idx); setPendingNodeId(null); writeSelectedToUrl(idx); }}
+              onClose={() => { userClosedRef.current = true; setSelectedHistoryIndex(null); setPendingNodeId(null); clearSelectionFromUrl(); }}
               dot={dot}
               nodeLabels={nodeLabels}
             />
@@ -452,7 +510,7 @@ export function KilroyRunViewer() {
               nodeId={pendingNodeId}
               nodeLabel={nodeLabels.get(pendingNodeId) ?? pendingNodeId}
               dot={dot ?? ""}
-              onClose={() => { userClosedRef.current = true; setPendingNodeId(null); }}
+              onClose={() => { userClosedRef.current = true; setPendingNodeId(null); clearSelectionFromUrl(); }}
             />
           )}
         </div>
