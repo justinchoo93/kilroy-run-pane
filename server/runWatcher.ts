@@ -1,5 +1,5 @@
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { join, relative, dirname } from "node:path";
 import { EventEmitter } from "node:events";
 import chokidar, { type FSWatcher } from "chokidar";
 import { checkContainerAlive } from "./pidCheck.js";
@@ -365,6 +365,7 @@ async function readAttractorFormat(runId: string, runDir: string): Promise<RunSt
 }
 
 async function parseProgressHistory(progressPath: string): Promise<{ history: VisitedStage[]; cycleInfo?: CycleInfo }> {
+  const stageDir = dirname(progressPath);
   try {
     const raw = await readFile(progressPath, "utf8");
     const lines = raw.split("\n");
@@ -406,9 +407,11 @@ async function parseProgressHistory(progressPath: string): Promise<{ history: Vi
           const bKey = `${fan_out_node}/${branch_key}/${branch_node_id}:${branch_attempt}`;
 
           if (branch_event === "stage_attempt_start") {
-            // Derive relative stage path from logs_root
+            // Derive stage path relative to this run's dir from the absolute branch_logs_root.
+            // Using relative() handles any depth (e.g., old: parallel/fan/01-x/node,
+            // new with passN: parallel/fan/pass1/01-x/node).
             const stage_path = branch_logs_root
-              ? `${branch_logs_root.split("/").slice(-3).join("/")}/${branch_node_id}`
+              ? relative(stageDir, join(branch_logs_root, branch_node_id))
               : undefined;
             const visit: VisitedStage = {
               node_id: branch_node_id,
