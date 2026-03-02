@@ -64,7 +64,7 @@ function parseOutgoingEdges(dot: string, nodeId: string): DotEdge[] {
       const attrRe = /(\w+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^\s,\]]+))/g;
       let am;
       while ((am = attrRe.exec(m[2])) !== null) {
-        (edge as Record<string, string>)[am[1]] = (am[2] ?? am[3] ?? "");
+        (edge as unknown as Record<string, string>)[am[1]] = (am[2] ?? am[3] ?? "");
       }
     }
     edges.push(edge);
@@ -219,13 +219,12 @@ function PreviousVisitItem({
 }
 
 function LLMNodeContent({
-  run, stagePath, stageFiles, isLatestVisit, isRunning, visitNum, totalVisits, otherVisits,
+  run, stagePath, stageFiles, isRunning, visitNum, totalVisits, otherVisits,
   visit, stageHistory,
 }: {
   run: RunRecord;
   stagePath: string;
   stageFiles: StageFiles;
-  isLatestVisit: boolean;
   isRunning?: boolean;
   visitNum: number;
   totalVisits: number;
@@ -286,6 +285,7 @@ function LLMNodeContent({
   useEffect(() => {
     if (!stageFiles.hasResponse && !stageFiles.hasTurns && !stageFiles.hasPrompt) return;
     const isAvailable =
+      tab === "workspace" ||
       (tab === "response" && stageFiles.hasResponse) ||
       (tab === "turns"    && stageFiles.hasTurns)    ||
       (tab === "prompt"   && stageFiles.hasPrompt);
@@ -797,7 +797,7 @@ export function StageDetailPanel({
   const visitNum = visitsForNode.findIndex(({ index }) => index === selectedHistoryIndex) + 1;
   const otherVisitsForLLM = useMemo(
     () => visitsForNode
-      .map(({ visit: v, index }, i) => ({ visit: v, visitNum: i + 1, stagePath: v.stage_path ?? v.node_id }))
+      .map(({ visit: v }, i) => ({ visit: v, visitNum: i + 1, stagePath: v.stage_path ?? v.node_id }))
       .filter((_, i) => visitsForNode[i].index !== selectedHistoryIndex),
     [visitsForNode, selectedHistoryIndex, nodeId], // eslint-disable-line react-hooks/exhaustive-deps
   );
@@ -823,7 +823,10 @@ export function StageDetailPanel({
   const [stageFiles, setStageFiles] = useState<StageFiles>(EMPTY_STAGE_FILES);
   useEffect(() => {
     if (!effectiveStagePath) return;
-    setStageFiles(EMPTY_STAGE_FILES);
+    // Don't reset to EMPTY_STAGE_FILES here — that causes visible tabs (Response, Turns,
+    // Prompt) to vanish momentarily between node switches since visibleTabs filters by
+    // stageFiles.has*.  Content is already cleared separately (above), so keeping the stale
+    // tab structure until the new fetch resolves just keeps the tab bar stable.
     fetchStageFiles(run.id, effectiveStagePath).then(setStageFiles);
   }, [run.id, effectiveStagePath]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -940,7 +943,6 @@ export function StageDetailPanel({
           run={run}
           stagePath={effectiveStagePath}
           stageFiles={stageFiles}
-          isLatestVisit={isLatestVisit}
           isRunning={isRunning}
           visitNum={visitNum || 1}
           totalVisits={visitsForNode.length}

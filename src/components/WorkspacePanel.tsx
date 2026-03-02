@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
@@ -393,11 +394,23 @@ function FileContentViewer({ content, fileName }: { content: string; fileName: s
 }
 
 export function WorkspacePanel({ runId, isExecuting, selectedVisit, stageHistory }: WorkspacePanelProps) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<WorkspaceData | null>(null);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // Initialize from URL so refreshes restore selection
+  const [selectedPath, setSelectedPathState] = useState<string | null>(() => searchParams.get("wsfile"));
   // Stable ref so fetchFiles can read current path without being in its dep array
   const selectedPathRef = useRef<string | null>(null);
   useEffect(() => { selectedPathRef.current = selectedPath; }, [selectedPath]);
+
+  // Wrapper that syncs selection to URL
+  const setSelectedPath = useCallback((path: string | null) => {
+    setSelectedPathState(path);
+    setSearchParams((p) => {
+      if (path) p.set("wsfile", path);
+      else p.delete("wsfile");
+      return p;
+    }, { replace: true });
+  }, [setSearchParams]);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -450,8 +463,11 @@ export function WorkspacePanel({ runId, isExecuting, selectedVisit, stageHistory
       setPinnedRef(isBranch ? `${commit.sha}^` : commit.sha);
       // Diff always shows what the commit itself introduced
       setPinnedDiffRef(commit.sha);
-      // Label uses the actual selected node_id, not the fan_out parent
-      setPinnedLabel(`${commit.sha.slice(0, 7)} ${selectedVisit.node_id}`);
+      // Label shows start..end range so the user sees which commits bound this visit
+      const fullIndex = commits.indexOf(commit);
+      const prevCommit = fullIndex > 0 ? commits[fullIndex - 1] : null;
+      const startShort = prevCommit ? prevCommit.sha.slice(0, 7) : "root";
+      setPinnedLabel(`${startShort}..${commit.sha.slice(0, 7)} ${selectedVisit.node_id}`);
     } else {
       setPinnedRef(null);
       setPinnedDiffRef(null);
@@ -495,12 +511,13 @@ export function WorkspacePanel({ runId, isExecuting, selectedVisit, stageHistory
     } catch (e) {
       setError(String(e));
     }
-  }, [runId]); // selectedPath intentionally excluded — read via selectedPathRef
+  }, [runId, setSelectedPath]); // selectedPath intentionally excluded — read via selectedPathRef
 
-  // Reload file tree when pinnedRef changes; clear stale content but preserve path
+  // Reload file tree when switching to a pinned commit; clear stale content but preserve path
+  // Note: when pinnedRef is null (live mode), effect below handles the fetch instead
   useEffect(() => {
     setFileContent(null);
-    fetchFiles(pinnedRef);
+    if (pinnedRef) fetchFiles(pinnedRef);
   }, [pinnedRef]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Initial load + auto-refresh while executing (only in live/HEAD mode)
@@ -571,9 +588,13 @@ export function WorkspacePanel({ runId, isExecuting, selectedVisit, stageHistory
     });
   }, [fileDiffs]);
 
-  // When pinned to a commit and its diff loads, auto-select the first changed file
+  // When pinned to a commit and its diff loads, auto-select the first changed file —
+  // but only when there is no existing selection (e.g. initial page load without ?wsfile).
+  // If the user (or a prior auto-select) already chose a file, preserve it; fetchFiles
+  // handles the case where that file doesn't exist at the new ref.
   useEffect(() => {
     if (!pinnedDiffRef || fileDiffs.size === 0) return;
+    if (selectedPathRef.current) return; // preserve existing selection across node/visit switches
     const firstChanged = [...fileDiffs.keys()][0];
     if (firstChanged) {
       setSelectedPath(firstChanged);

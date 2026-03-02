@@ -167,7 +167,7 @@ export function KilroyRunViewer() {
   }, [stageHistory, visitNumForIndex, setSearchParams]);
 
   const clearSelectionFromUrl = useCallback(() => {
-    setSearchParams((p) => { p.delete("node"); p.delete("visit"); p.delete("tab"); return p; }, { replace: true });
+    setSearchParams((p) => { p.delete("node"); p.delete("visit"); p.delete("tab"); p.delete("wsfile"); return p; }, { replace: true });
   }, [setSearchParams]);
 
   // Once stageHistory first loads, restore selection from URL params.
@@ -298,7 +298,7 @@ export function KilroyRunViewer() {
     } else {
       setSelectedHistoryIndex(null);
       setPendingNodeId(nodeName);
-      setSearchParams((p) => { p.set("node", nodeName); p.delete("visit"); p.delete("tab"); return p; }, { replace: true });
+      setSearchParams((p) => { p.set("node", nodeName); p.delete("visit"); return p; }, { replace: true });
     }
   };
 

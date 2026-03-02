@@ -293,7 +293,7 @@ export function registerRoutes(
 
     // When a git ref is supplied, list files from the commit tree
     if (ref) {
-      if (!/^[0-9a-f]{6,40}$/i.test(ref)) { res.status(400).json({ error: "invalid ref" }); return; }
+      if (!/^[0-9a-f]{6,40}\^?$/i.test(ref)) { res.status(400).json({ error: "invalid ref" }); return; }
       const { execFile } = await import("node:child_process");
       execFile(
         "git", ["ls-tree", "-r", "-l", ref],
@@ -328,8 +328,9 @@ export function registerRoutes(
     async function scanDir(dir: string, prefix: string) {
       try {
         const entries = await readdir(dir, { withFileTypes: true });
-        for (const e of entries) {
-          if (SKIP.has(e.name)) continue;
+        // Parallel stat calls — much faster than sequential for large repos
+        await Promise.all(entries.map(async (e) => {
+          if (SKIP.has(e.name)) return;
           const rel = prefix ? `${prefix}/${e.name}` : e.name;
           if (e.isDirectory()) {
             await scanDir(join(dir, e.name), rel);
@@ -339,7 +340,7 @@ export function registerRoutes(
               files.push({ path: rel, name: e.name, size: s.size, mtime: s.mtimeMs });
             } catch { /* skip */ }
           }
-        }
+        }));
       } catch { /* dir missing */ }
     }
 
@@ -360,7 +361,7 @@ export function registerRoutes(
     if (!worktreePath) { res.status(404).json({ error: "no worktree" }); return; }
 
     if (ref) {
-      if (!/^[0-9a-f]{6,40}$/i.test(ref)) { res.status(400).json({ error: "invalid ref" }); return; }
+      if (!/^[0-9a-f]{6,40}\^?$/i.test(ref)) { res.status(400).json({ error: "invalid ref" }); return; }
       const { execFile } = await import("node:child_process");
       execFile(
         "git", ["show", `${ref}:${relPath}`],
