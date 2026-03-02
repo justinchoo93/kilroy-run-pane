@@ -223,8 +223,9 @@ export function DotPreview({
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [svgVersion, setSvgVersion] = useState(0);
-  const [scale, setScale] = useState(1);
-  const [translate, setTranslate] = useState({ x: 0, y: 0 });
+  const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
+  const { scale } = transform;
+  const translate = transform;
   // Model data derived from DOT stylesheet (memoized — cheap to compute, avoids effect churn)
   const { nodeMap: nodeModelMap, legend: modelLegend } = useMemo(
     () => buildNodeModelData(dot ?? ""),
@@ -242,8 +243,7 @@ export function DotPreview({
 
   // Reset transform when DOT content changes.
   useEffect(() => {
-    setScale(1);
-    setTranslate({ x: 0, y: 0 });
+    setTransform({ scale: 1, x: 0, y: 0 });
   }, [dot]);
 
   // Render SVG.
@@ -979,14 +979,10 @@ export function DotPreview({
 
   // Zoom toward a point in container-local coordinates using a continuous factor.
   const zoomAt = useCallback((factor: number, cx: number, cy: number) => {
-    setScale((prev) => {
-      const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, prev * factor));
-      const ratio = next / prev;
-      setTranslate((t) => ({
-        x: cx - ratio * (cx - t.x),
-        y: cy - ratio * (cy - t.y),
-      }));
-      return next;
+    setTransform((t) => {
+      const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, t.scale * factor));
+      const ratio = next / t.scale;
+      return { scale: next, x: cx - ratio * (cx - t.x), y: cy - ratio * (cy - t.y) };
     });
   }, []);
 
@@ -1041,14 +1037,16 @@ export function DotPreview({
       x: e.clientX,
       y: e.clientY,
     };
-  }, [translate]);
+  }, [transform]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!dragRef.current) return;
-    setTranslate({
-      x: dragRef.current.startTx + (e.clientX - dragRef.current.startX),
-      y: dragRef.current.startTy + (e.clientY - dragRef.current.startY),
-    });
+    const drag = dragRef.current;
+    if (!drag) return;
+    setTransform((t) => ({
+      ...t,
+      x: drag.startTx + (e.clientX - drag.startX),
+      y: drag.startTy + (e.clientY - drag.startY),
+    }));
   }, []);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
@@ -1065,8 +1063,7 @@ export function DotPreview({
   }, []);
 
   const resetView = useCallback(() => {
-    setScale(1);
-    setTranslate({ x: 0, y: 0 });
+    setTransform({ scale: 1, x: 0, y: 0 });
   }, []);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -1094,16 +1091,18 @@ export function DotPreview({
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const ratio = dist / pinchRef.current.startDist;
-      const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, pinchRef.current.startScale * ratio));
-      const scaleRatio = newScale / scale;
       const { midX, midY } = pinchRef.current;
-      setScale(newScale);
-      setTranslate((t) => ({
-        x: midX - scaleRatio * (midX - t.x),
-        y: midY - scaleRatio * (midY - t.y),
-      }));
+      setTransform((t) => {
+        const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, pinchRef.current!.startScale * ratio));
+        const scaleRatio = newScale / t.scale;
+        return {
+          scale: newScale,
+          x: midX - scaleRatio * (midX - t.x),
+          y: midY - scaleRatio * (midY - t.y),
+        };
+      });
     }
-  }, [scale]);
+  }, []);
 
   const handleTouchEnd = useCallback(() => {
     pinchRef.current = null;
