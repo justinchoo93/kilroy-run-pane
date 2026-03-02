@@ -117,10 +117,10 @@ export function registerRoutes(
     res.json({ runs: summaries });
   });
 
-  // Get current run state snapshot
+  // Get current run state snapshot (one-time read, no watcher created)
   app.get("/api/runs/:id", async (req: Request, res: Response) => {
     const id = String(req.params["id"] ?? "");
-    const state = await watcher.watch(id);
+    const state = await watcher.readOnce(id);
     if (!state) {
       res.status(404).json({ error: "run not found" });
       return;
@@ -162,10 +162,11 @@ export function registerRoutes(
       res.write(": ping\n\n");
     }, SSE_PING_INTERVAL_MS);
 
-    // Cleanup on disconnect
+    // Cleanup on disconnect — tear down watcher when last SSE client leaves
     req.on("close", () => {
       clearInterval(ping);
       watcher.off("update", onUpdate);
+      watcher.sseDisconnect(id);
     });
   });
 
@@ -248,7 +249,7 @@ export function registerRoutes(
   // Workspace: list files in the worktree's .ai/ directory
   app.get("/api/runs/:id/workspace", async (req: Request, res: Response) => {
     const id = String(req.params["id"] ?? "");
-    const state = watcher.getState(id) ?? await watcher.watch(id);
+    const state = watcher.getState(id) ?? await watcher.readOnce(id);
     const worktreePath = state?.worktreePath;
     if (!worktreePath) { res.status(404).json({ error: "no worktree" }); return; }
 
@@ -286,7 +287,7 @@ export function registerRoutes(
     const relPath = String(req.query["path"] ?? "");
     if (!relPath || relPath.includes("..")) { res.status(400).json({ error: "invalid path" }); return; }
 
-    const state = watcher.getState(id) ?? await watcher.watch(id);
+    const state = watcher.getState(id) ?? await watcher.readOnce(id);
     const worktreePath = state?.worktreePath;
     if (!worktreePath) { res.status(404).json({ error: "no worktree" }); return; }
 
@@ -307,7 +308,7 @@ export function registerRoutes(
   // Workspace: download all .ai/ files as a zip
   app.get("/api/runs/:id/workspace/download", async (req: Request, res: Response) => {
     const id = String(req.params["id"] ?? "");
-    const state = watcher.getState(id) ?? await watcher.watch(id);
+    const state = watcher.getState(id) ?? await watcher.readOnce(id);
     const worktreePath = state?.worktreePath;
     if (!worktreePath) { res.status(404).json({ error: "no worktree" }); return; }
 
@@ -321,14 +322,39 @@ export function registerRoutes(
     await archive.finalize();
   });
 
-  // Workspace: reveal worktree in Finder (macOS only)
-  app.post("/api/runs/:id/workspace/reveal", async (req: Request, res: Response) => {
+  // Workspace: git diff HEAD in the worktree
+  app.get("/api/runs/:id/workspace/diff", async (req: Request, res: Response) => {
     const id = String(req.params["id"] ?? "");
-    const state = watcher.getState(id) ?? await watcher.watch(id);
+    const state = watcher.getState(id) ?? await watcher.readOnce(id);
     const worktreePath = state?.worktreePath;
     if (!worktreePath) { res.status(404).json({ error: "no worktree" }); return; }
     const { execFile } = await import("node:child_process");
-    execFile("open", [worktreePath], (err) => {
+    execFile(
+      "git", ["diff", "HEAD"],
+      { cwd: worktreePath, maxBuffer: 10 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        // git exits 1 when there are differences — that's normal, not an error
+        if (err && !stdout) {
+          res.status(500).json({ error: stderr || String(err) }); return;
+        }
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.send(stdout);
+      }
+    );
+  });
+
+  // Workspace: reveal worktree in the OS file manager (macOS, Windows, Linux)
+  app.post("/api/runs/:id/workspace/reveal", async (req: Request, res: Response) => {
+    const id = String(req.params["id"] ?? "");
+    const state = watcher.getState(id) ?? await watcher.readOnce(id);
+    const worktreePath = state?.worktreePath;
+    if (!worktreePath) { res.status(404).json({ error: "no worktree" }); return; }
+    const { execFile } = await import("node:child_process");
+    const [cmd, args]: [string, string[]] =
+      process.platform === "win32"  ? ["explorer", [worktreePath]] :
+      process.platform === "darwin" ? ["open",     [worktreePath]] :
+                                      ["xdg-open", [worktreePath]];
+    execFile(cmd, args, (err) => {
       if (err) { res.status(500).json({ error: String(err) }); return; }
       res.json({ ok: true });
     });
@@ -356,6 +382,7 @@ interface ToolCallRecord {
 
 interface AssistantStep {
   text?: string;
+  thinking?: string;
   tool_call?: ToolCallRecord;
 }
 
@@ -388,13 +415,28 @@ interface TurnsResponse {
 }
 
 function parseEventsTurns(raw: string): TurnsResponse {
-  const events: Array<{ kind: string; session_id?: string; data?: Record<string, unknown> }> = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const events: any[] = [];
   for (const line of raw.split("\n")) {
     const l = line.trim();
     if (!l) continue;
     try { events.push(JSON.parse(l)); } catch { /* skip malformed */ }
   }
 
+  // Detect format: Claude Code native format uses `type` field; Kilroy format uses `kind`.
+  const firstEv = events[0];
+  if (firstEv && "type" in firstEv && !("kind" in firstEv)) {
+    return parseClaudeCodeEvents(events);
+  }
+  return parseKilroyEvents(events);
+}
+
+// ── Kilroy format parser (kind: SESSION_START / USER_INPUT / TOOL_CALL_* / ASSISTANT_TEXT_END)
+
+function parseKilroyEvents(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  events: any[],
+): TurnsResponse {
   let session_id: string | undefined;
   let model: string | undefined;
   let profile: string | undefined;
@@ -455,6 +497,89 @@ function parseEventsTurns(raw: string): TurnsResponse {
 
   flushAssistant();
   return { session_id, model: model || undefined, profile: profile || undefined, turns };
+}
+
+// ── Claude Code native format parser (type: system / assistant / user / result)
+// Each assistant event has a message.id — events with the same id belong to one turn.
+// Content blocks: thinking, text, tool_use. Tool results arrive in subsequent user events.
+
+function parseClaudeCodeEvents(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  events: any[],
+): TurnsResponse {
+  let session_id: string | undefined;
+  let model: string | undefined;
+  let response_text: string | undefined;
+
+  const turns: (TurnUser | TurnAssistant)[] = [];
+  let currentMsgId: string | undefined;
+  const currentSteps: AssistantStep[] = [];
+
+  const flushAssistant = () => {
+    if (currentSteps.length > 0) {
+      turns.push({ role: "assistant", steps: [...currentSteps] });
+      currentSteps.length = 0;
+    }
+    currentMsgId = undefined;
+  };
+
+  for (const ev of events) {
+    const evType = ev.type;
+
+    if (evType === "system") {
+      session_id = ev.session_id;
+      model = ev.model;
+    } else if (evType === "assistant") {
+      const msg = ev.message;
+      const msgId: string | undefined = msg?.id;
+      if (!msgId) continue;
+
+      if (currentMsgId && currentMsgId !== msgId) {
+        flushAssistant();
+      }
+      currentMsgId = msgId;
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const block of (msg.content ?? []) as any[]) {
+        if (block.type === "thinking" && block.thinking) {
+          currentSteps.push({ thinking: String(block.thinking) });
+        } else if (block.type === "text" && block.text) {
+          currentSteps.push({ text: String(block.text) });
+        } else if (block.type === "tool_use") {
+          currentSteps.push({
+            tool_call: {
+              call_id: String(block.id ?? ""),
+              tool_name: String(block.name ?? ""),
+              arguments: (block.input ?? {}) as Record<string, unknown>,
+              output: "",
+              is_error: false,
+            },
+          });
+        }
+      }
+    } else if (evType === "user") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const block of (ev.message?.content ?? []) as any[]) {
+        if (block.type === "tool_result") {
+          const toolId = String(block.tool_use_id ?? "");
+          const step = currentSteps.find((s) => s.tool_call?.call_id === toolId);
+          if (step?.tool_call) {
+            const raw = block.content;
+            step.tool_call.output = typeof raw === "string"
+              ? raw
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              : Array.isArray(raw) ? (raw as any[]).map((c) => (typeof c === "string" ? c : (c.text ?? JSON.stringify(c)))).join("") : JSON.stringify(raw);
+            step.tool_call.is_error = Boolean(block.is_error);
+          }
+        }
+      }
+    } else if (evType === "result" && ev.result) {
+      response_text = String(ev.result);
+    }
+  }
+
+  flushAssistant();
+  return { session_id, model: model || undefined, turns, response_text };
 }
 
 async function computePricing(

@@ -126,6 +126,7 @@ export interface ToolCallRecord {
 
 export interface AssistantStep {
   text?: string;
+  thinking?: string;
   tool_call?: ToolCallRecord;
 }
 

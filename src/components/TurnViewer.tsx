@@ -8,18 +8,21 @@ import MarkdownContent from "./MarkdownContent";
 /** The filename to use for fingerprinting a tool's OUTPUT */
 function outputFileName(toolName: string, args: Record<string, unknown>): string {
   switch (toolName) {
-    case "read_file": {
+    case "read_file":
+    case "Read": {
       const p = String(args.file_path ?? args.path ?? "");
       return p ? baseName(p) : "output.txt";
     }
     case "list_dir":
-      return "listing.json";
     case "glob":
+    case "Glob":
       return "listing.json";
     case "grep":
+    case "Grep":
       return "grep.log";
     case "shell":
     case "bash":
+    case "Bash":
       return "output.log";
     default:
       return "output.log";
@@ -42,6 +45,9 @@ function toolLabel(toolName: string, args: Record<string, unknown>): string {
     case "read_file":
     case "write_file":
     case "edit_file":
+    case "Read":
+    case "Write":
+    case "Edit":
       return shortPath(String(args.file_path ?? args.path ?? args.target_file ?? ""));
     case "read_many_files": {
       const paths = Array.isArray(args.paths) ? (args.paths as unknown[]).map(String) : [];
@@ -51,16 +57,27 @@ function toolLabel(toolName: string, args: Record<string, unknown>): string {
     case "list_dir":
       return shortPath(String(args.path ?? "."));
     case "glob":
+    case "Glob":
       return String(args.pattern ?? "");
-    case "grep": {
+    case "grep":
+    case "Grep": {
       const pat = String(args.pattern ?? args.regex ?? "");
       const p = String(args.path ?? args.dir ?? "");
       return [pat && `/${pat}/`, p && shortPath(p)].filter(Boolean).join(" in ");
     }
     case "shell":
-    case "bash": {
+    case "bash":
+    case "Bash": {
       const cmd = String(args.command ?? "");
       return cmd.length > 72 ? cmd.slice(0, 72) + "…" : cmd;
+    }
+    case "WebFetch":
+      return String(args.url ?? "").replace(/^https?:\/\//, "").slice(0, 60);
+    case "WebSearch":
+      return String(args.query ?? "").slice(0, 60);
+    case "Task": {
+      const desc = String(args.description ?? args.prompt ?? "");
+      return desc.length > 60 ? desc.slice(0, 60) + "…" : desc;
     }
     default: {
       // First string-valued arg as fallback
@@ -83,16 +100,40 @@ function shortPath(p: string): string {
 // ── Icons ───────────────────────────────────────────────────────────────────
 
 const TOOL_ICONS: Record<string, string> = {
-  read_file: "📄",
+  read_file: "📄", Read: "📄",
   read_many_files: "📚",
-  write_file: "✏️",
-  edit_file: "✂️",
+  write_file: "✏️", Write: "✏️",
+  edit_file: "✂️", Edit: "✂️",
   list_dir: "📁",
-  glob: "🔍",
-  grep: "🔎",
-  shell: "💻",
-  bash: "💻",
+  glob: "🔍", Glob: "🔍",
+  grep: "🔎", Grep: "🔎",
+  shell: "💻", bash: "💻", Bash: "💻",
+  WebFetch: "🌐", WebSearch: "🔎",
+  Task: "🤖",
 };
+
+// ── ThinkingBlock ────────────────────────────────────────────────────────────
+
+function ThinkingBlock({ thinking }: { thinking: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded border border-purple-900/40 bg-purple-950/20 text-xs">
+      <button
+        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-white/[0.03] rounded"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="text-purple-400/70 shrink-0">✦</span>
+        <span className="text-purple-400/70 font-medium">Thinking</span>
+        <span className="text-gray-700 text-[10px] shrink-0 ml-auto">{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div className="border-t border-purple-900/30 px-3 py-2 text-gray-400 whitespace-pre-wrap leading-relaxed max-h-[40vh] overflow-auto">
+          {thinking}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── ToolCallBlock ────────────────────────────────────────────────────────────
 
@@ -102,14 +143,14 @@ function ToolCallBlock({ tc }: { tc: ToolCallRecord }) {
   const label = toolLabel(tc.tool_name, args);
   const icon = TOOL_ICONS[tc.tool_name] ?? "⚙️";
 
-  const isWrite = tc.tool_name === "write_file";
-  const isEdit = tc.tool_name === "edit_file";
+  const isWrite = tc.tool_name === "write_file" || tc.tool_name === "Write";
+  const isEdit = tc.tool_name === "edit_file" || tc.tool_name === "Edit";
 
-  // For write_file: render the content arg as the primary content
+  // For write_file/Write: render the content arg as the primary content
   const writeContent = isWrite ? String(args.content ?? args.text ?? "") : null;
   const writeFn = isWrite ? writeFileName(args) : null;
 
-  // For edit_file: render old_str → new_str as a synthetic diff
+  // For edit_file/Edit: render old_str → new_str as a synthetic diff
   const editOld = isEdit ? String(args.old_str ?? args.old_string ?? "") : null;
   const editNew = isEdit ? String(args.new_str ?? args.new_string ?? "") : null;
   const editFn = isEdit ? writeFileName(args) : null;
@@ -256,6 +297,9 @@ function AssistantTurn({ turn }: { turn: TurnAssistant }) {
   return (
     <div className="space-y-1.5">
       {turn.steps.map((step, i) => {
+        if (step.thinking) {
+          return <ThinkingBlock key={i} thinking={step.thinking} />;
+        }
         if (step.tool_call) {
           return <ToolCallBlock key={i} tc={step.tool_call} />;
         }
