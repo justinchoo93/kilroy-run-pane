@@ -79,14 +79,44 @@ function buildTree(files: WorkspaceFile[]): TreeItem[] {
   return root;
 }
 
+interface FileDiffInfo {
+  diff: string;
+  status: "modified" | "added" | "deleted";
+  additions: number;
+  deletions: number;
+}
+
+/** Parse unified diff text into per-file sections. */
+function parseDiffByFile(diffText: string): Map<string, FileDiffInfo> {
+  const result = new Map<string, FileDiffInfo>();
+  const sections = diffText.split(/(?=^diff --git )/m);
+  for (const section of sections) {
+    if (!section.trim()) continue;
+    const pathMatch = /^\+\+\+ b\/(.+)$/m.exec(section);
+    if (!pathMatch) continue;
+    const path = pathMatch[1].trim();
+    const status: FileDiffInfo["status"] =
+      /^new file mode/m.test(section) ? "added" :
+      /^deleted file mode/m.test(section) ? "deleted" : "modified";
+    let additions = 0, deletions = 0;
+    for (const line of section.split("\n")) {
+      if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+      if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+    }
+    result.set(path, { diff: section, status, additions, deletions });
+  }
+  return result;
+}
+
 function TreeView({
-  items, expandedDirs, onToggleDir, selectedPath, onSelectFile, depth = 0,
+  items, expandedDirs, onToggleDir, selectedPath, onSelectFile, fileDiffs, depth = 0,
 }: {
   items: TreeItem[];
   expandedDirs: Set<string>;
   onToggleDir: (path: string) => void;
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
+  fileDiffs: Map<string, FileDiffInfo>;
   depth?: number;
 }) {
   return (
@@ -111,6 +141,7 @@ function TreeView({
                   onToggleDir={onToggleDir}
                   selectedPath={selectedPath}
                   onSelectFile={onSelectFile}
+                  fileDiffs={fileDiffs}
                   depth={depth + 1}
                 />
               )}
@@ -118,6 +149,11 @@ function TreeView({
           );
         } else {
           const isSelected = item.path === selectedPath;
+          const diffInfo = fileDiffs.get(item.path);
+          const nameColor = isSelected ? "text-gray-100" :
+            diffInfo?.status === "added" ? "text-green-400" :
+            diffInfo?.status === "deleted" ? "text-red-400" :
+            diffInfo ? "text-amber-300" : "text-gray-400";
           return (
             <button
               key={item.path}
@@ -128,15 +164,66 @@ function TreeView({
               }`}
             >
               <span className="text-[8px] text-gray-600 font-mono w-5 shrink-0 text-right">{fileIcon(item.name)}</span>
-              <span className={`text-[10px] font-mono truncate flex-1 ${isSelected ? "text-gray-100" : "text-gray-400"}`}>
+              <span className={`text-[10px] font-mono truncate flex-1 ${nameColor}`}>
                 {item.name}
               </span>
-              <span className="text-[9px] text-gray-700 shrink-0 tabular-nums">{fmtSize(item.file.size)}</span>
+              {diffInfo ? (
+                <span className="text-[9px] shrink-0 tabular-nums flex items-center gap-0.5">
+                  {diffInfo.additions > 0 && <span className="text-green-500">+{diffInfo.additions}</span>}
+                  {diffInfo.deletions > 0 && <span className="text-red-500">-{diffInfo.deletions}</span>}
+                </span>
+              ) : (
+                <span className="text-[9px] text-gray-700 shrink-0 tabular-nums">{fmtSize(item.file.size)}</span>
+              )}
             </button>
           );
         }
       })}
     </>
+  );
+}
+
+// ── Diff viewer ────────────────────────────────────────────────────────────
+
+function DiffViewer({ diff, singleFile = false }: { diff: string; singleFile?: boolean }) {
+  if (!diff.trim()) {
+    return <div className="text-xs text-gray-500 italic">No changes from HEAD.</div>;
+  }
+
+  const lines = diff.split("\n");
+  return (
+    <div className="font-mono text-[11px] leading-relaxed overflow-x-auto">
+      {lines.map((line, i) => {
+        if (line.startsWith("diff --git")) {
+          if (singleFile) return null;
+          return (
+            <div key={i} className="text-gray-300 font-semibold mt-3 mb-0.5 pb-0.5 border-b border-gray-700/50 truncate">
+              {line.replace(/^diff --git a\/.+ b\//, "")}
+            </div>
+          );
+        }
+        if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+          return singleFile ? null : <div key={i} className="text-gray-600 truncate">{line}</div>;
+        }
+        if (line.startsWith("@@")) {
+          return (
+            <div key={i} className="text-cyan-400/70 bg-cyan-950/20 -mx-3 px-3 mt-1 truncate">
+              {line}
+            </div>
+          );
+        }
+        if (line.startsWith("+")) {
+          return <div key={i} className="text-green-400 bg-green-950/30 -mx-3 px-3 whitespace-pre">{line}</div>;
+        }
+        if (line.startsWith("-")) {
+          return <div key={i} className="text-red-400 bg-red-950/30 -mx-3 px-3 whitespace-pre">{line}</div>;
+        }
+        if (line.startsWith("index ") || line.startsWith("Binary") || line.startsWith("new file") || line.startsWith("deleted file")) {
+          return <div key={i} className="text-gray-600 text-[10px]">{line}</div>;
+        }
+        return <div key={i} className="text-gray-500 whitespace-pre">{line || " "}</div>;
+      })}
+    </div>
   );
 }
 
@@ -304,6 +391,9 @@ export function WorkspacePanel({ runId, isExecuting, onClose }: WorkspacePanelPr
   const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [fileDiffs, setFileDiffs] = useState<Map<string, FileDiffInfo>>(new Map());
+  // "diff" shows the git diff for a changed file; "raw" shows its content
+  const [fileViewMode, setFileViewMode] = useState<"diff" | "raw">("diff");
   // Which directories are expanded in the tree (default: .ai)
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set([".ai"]));
 
@@ -372,6 +462,41 @@ export function WorkspacePanel({ runId, isExecuting, onClose }: WorkspacePanelPr
     return () => clearInterval(id);
   }, [runId, selectedPath, isExecuting]);
 
+  const fetchDiff = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/runs/${runId}/workspace/diff`);
+      if (res.ok) setFileDiffs(parseDiffByFile(await res.text()));
+    } catch { /* ignore */ }
+  }, [runId]);
+
+  // Fetch diff on mount and auto-refresh while executing
+  useEffect(() => {
+    fetchDiff();
+    if (!isExecuting) return;
+    const id = setInterval(fetchDiff, 4000);
+    return () => clearInterval(id);
+  }, [fetchDiff, isExecuting]);
+
+  // Auto-expand directories that contain changed files
+  useEffect(() => {
+    if (fileDiffs.size === 0) return;
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      for (const path of fileDiffs.keys()) {
+        const parts = path.split("/");
+        for (let i = 1; i < parts.length; i++) {
+          next.add(parts.slice(0, i).join("/"));
+        }
+      }
+      return next;
+    });
+  }, [fileDiffs]);
+
+  // Switch to diff view automatically when selecting a changed file
+  useEffect(() => {
+    setFileViewMode(selectedPath && fileDiffs.has(selectedPath) ? "diff" : "raw");
+  }, [selectedPath]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleReveal = () => {
     fetch(`/api/runs/${runId}/workspace/reveal`, { method: "POST" }).catch(() => {});
   };
@@ -411,10 +536,10 @@ export function WorkspacePanel({ runId, isExecuting, onClose }: WorkspacePanelPr
           <button
             onClick={handleReveal}
             disabled={!data}
-            title="Open worktree in Finder"
+            title="Open worktree in file manager"
             className="text-[10px] px-2 py-0.5 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            ⌘ Finder
+            ⌘ Open folder
           </button>
           <button
             onClick={handleDownload}
@@ -452,29 +577,51 @@ export function WorkspacePanel({ runId, isExecuting, onClose }: WorkspacePanelPr
                 onToggleDir={toggleDir}
                 selectedPath={selectedPath}
                 onSelectFile={setSelectedPath}
+                fileDiffs={fileDiffs}
               />
             )}
           </div>
 
-          {/* File content */}
+          {/* File content / diff */}
           <div className="flex-1 min-h-0 overflow-auto px-3 py-2">
             {!selectedPath ? (
               <div className="text-xs text-gray-600">Select a file to view</div>
-            ) : loadingContent ? (
-              <div className="text-xs text-gray-600">Loading…</div>
-            ) : fileContent !== null ? (
-              <div>
-                <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-gray-800/50">
-                  <span className="text-[10px] font-mono text-gray-400 flex-1 truncate">{selectedFile?.path}</span>
-                  {selectedFile && (
-                    <span className="text-[9px] text-gray-600 shrink-0 tabular-nums">
-                      {fmtSize(selectedFile.size)} · {formatAge(selectedFile.mtime)} ago
-                    </span>
-                  )}
+            ) : (() => {
+              const diffInfo = fileDiffs.get(selectedPath);
+              return (
+                <div>
+                  {/* Header row */}
+                  <div className="flex items-center gap-2 mb-2 pb-1.5 border-b border-gray-800/50">
+                    <span className="text-[10px] font-mono text-gray-400 flex-1 truncate">{selectedFile?.path}</span>
+                    {diffInfo && (
+                      <div className="flex items-center gap-0.5 shrink-0">
+                        <button
+                          onClick={() => setFileViewMode("diff")}
+                          className={`text-[9px] px-1.5 py-0.5 rounded transition-colors ${fileViewMode === "diff" ? "bg-gray-700 text-gray-200" : "text-gray-600 hover:text-gray-400"}`}
+                        >Diff</button>
+                        <button
+                          onClick={() => setFileViewMode("raw")}
+                          className={`text-[9px] px-1.5 py-0.5 rounded transition-colors ${fileViewMode === "raw" ? "bg-gray-700 text-gray-200" : "text-gray-600 hover:text-gray-400"}`}
+                        >Raw</button>
+                      </div>
+                    )}
+                    {!diffInfo && selectedFile && (
+                      <span className="text-[9px] text-gray-600 shrink-0 tabular-nums">
+                        {fmtSize(selectedFile.size)} · {formatAge(selectedFile.mtime)} ago
+                      </span>
+                    )}
+                  </div>
+                  {/* Body */}
+                  {diffInfo && fileViewMode === "diff" ? (
+                    <DiffViewer diff={diffInfo.diff} singleFile />
+                  ) : loadingContent ? (
+                    <div className="text-xs text-gray-600">Loading…</div>
+                  ) : fileContent !== null ? (
+                    <FileContentViewer content={fileContent} fileName={selectedFile?.name ?? ""} />
+                  ) : null}
                 </div>
-                <FileContentViewer content={fileContent} fileName={selectedFile?.name ?? ""} />
-              </div>
-            ) : null}
+              );
+            })()}
           </div>
         </div>
       )}
